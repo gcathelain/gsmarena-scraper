@@ -11,6 +11,78 @@ from stem.control import Controller
 logger = logging.getLogger("gsmarena-scraper")
 temps_debut = time.time()
 
+COLUMNS = [
+    "Link",
+    "Image",
+    "Name",
+    "Release date",
+    "Weight",
+    "OS",
+    "Storage",
+    "Fans",
+    "Popularity",
+    "Hits",
+    "Screen_size",
+    "Screen_resolution",
+    "RAM",
+    "SOC",
+    "Battery",
+    "net2g",
+    "gprstext",
+    "edge",
+    "year",
+    "status",
+    "dimensions",
+    "weight.1",
+    "sim",
+    "bodyother",
+    "displaytype",
+    "displaysize",
+    "displayresolution",
+    "os.1",
+    "chipset",
+    "cpu",
+    "memoryslot",
+    "internalmemory",
+    "cam1modules",
+    "cam1video",
+    "cam2modules",
+    "cam2video",
+    "wlan",
+    "bluetooth",
+    "gps",
+    "nfc",
+    "radio",
+    "usb",
+    "sensors",
+    "batdescription1",
+    "battalktime1",
+    "colors",
+    "price",
+    "net3g",
+    "net4g",
+    "speed",
+    "gpu",
+    "cam1features",
+    "memoryother",
+    "featuresother",
+    "cam2features",
+    "optionalother",
+    "batstandby1",
+    "tbench",
+    "batlife",
+    "displayprotection",
+    "models",
+    "sar-eu",
+    "batmusicplayback1",
+    "displayother",
+    "sar-us",
+    "build",
+    "net5g",
+]
+
+BRANDS = ["zte-phones", "vivo-phones"]
+
 
 class tor_network:
     def __init__(self):
@@ -25,18 +97,14 @@ class tor_network:
         while True:
             try:
                 self.ntries += 1
-                soup = BeautifulSoup(
-                    self.session.get(url).content, features="lxml"
-                )
+                soup = BeautifulSoup(self.session.get(url).content, features="lxml")
                 if soup.find("title").text.lower() == "too many requests":
-                    logger.info(f"Too many requests.")
+                    logger.debug(f"Too many requests.")
                     self.request_new_ip()
                 elif soup or self.ntries > 30:
                     self.ntries = 0
                     break
-                logger.debug(
-                    f"Try {self.ntries} : Problem with soup for {url}."
-                )
+                logger.debug(f"Try {self.ntries} : Problem with soup for {url}.")
             except Exception as e:
                 logger.debug(f"Can't extract webpage {url}.")
                 self.request_new_ip()
@@ -112,15 +180,13 @@ def extract_smartphone_infos(network, smartphone):
         if ram:
             try:
                 logger.debug("RAM : %s", ram)
-                smartphone_dict["RAM"] = " ".join(
-                    [ram[i].strip() for i in [2, 3]]
-                )
+                smartphone_dict["RAM"] = " ".join([ram[i].strip() for i in [2, 3]])
                 smartphone_dict["SOC"] = str(ram[-1]).strip()
             except Exception as e:
                 logger.debug(f"RAM : %s", e)
-        batterie = soup_smartphone.find(
-            "li", {"class": "help-battery"}
-        ).find_all(text=True)
+        batterie = soup_smartphone.find("li", {"class": "help-battery"}).find_all(
+            text=True
+        )
         if batterie:
             try:
                 logger.debug("Battery : %s", batterie)
@@ -133,14 +199,9 @@ def extract_smartphone_infos(network, smartphone):
             try:
                 type = str(spec["data-spec"].strip())
                 value = "".join(
-                    [
-                        x.strip()
-                        for x in spec.find_all(text=True, recursive=False)
-                    ]
+                    [x.strip() for x in spec.find_all(text=True, recursive=False)]
                 )
-                smartphone_dict[type] = value.replace("\n", " ").replace(
-                    "\r", " "
-                )
+                smartphone_dict[type] = value.replace("\n", " ").replace("\r", " ")
                 logger.debug("%s : %s", type, value)
             except Exception:
                 pass
@@ -155,7 +216,23 @@ def extract_brand_name(brand):
     return brand["href"].rsplit("-", 1)[0]
 
 
-def extract_brand_infos(network, brand):
+def smartphone_infos_to_csv(smartphone_dict, brand_export_file, row_index):
+    smartphone_df = pd.DataFrame(smartphone_dict, index=[0])
+    missing_keys = list(set(COLUMNS) - set(smartphone_dict.keys()))
+    if len(missing_keys) > 0:
+        smartphone_df[missing_keys] = None
+    smartphone_df = smartphone_df[COLUMNS]
+    smartphone_df.to_csv(
+        brand_export_file,
+        columns=COLUMNS,
+        mode="a" if row_index != 0 else "w",
+        header=row_index == 0,
+        sep=";",
+        index=False,
+    )
+
+
+def extract_brand_infos(network, brand, brand_export_file):
     index_page = 1
     brand = brand["href"].rsplit("-", 1)
     brand_name = str(brand[0])
@@ -172,18 +249,17 @@ def extract_brand_infos(network, brand):
         logger.debug(f"Page URL : {url_brand_page}")
 
         if soup_page.find("div", {"class": "section-body"}).select("li"):
-            smartphones = soup_page.find(
-                "div", {"class": "section-body"}
-            ).find_all("li")
+            smartphones = soup_page.find("div", {"class": "section-body"}).find_all(
+                "li"
+            )
             soup_page.decompose()
-            for smartphone in smartphones:
+            for n, smartphone in enumerate(smartphones):
                 smartphone_dict = extract_smartphone_infos(network, smartphone)
+                smartphone_infos_to_csv(smartphone_dict, brand_export_file, n)
                 smartphone_list.append(smartphone_dict)
         else:
             soup_page.decompose()
-            logger.error(
-                "%s : td class=section-body not found", url_brand_page
-            )
+            logger.error("%s : td class=section-body not found", url_brand_page)
             return smartphone_list
 
 
@@ -202,13 +278,14 @@ def main():
     global_list_smartphones = pd.DataFrame()
     for brand in brands:
         brand_name = extract_brand_name(brand)
+        if brand_name not in BRANDS:
+            continue
         brand_export_file = f"Exports/{brand_name}_export.csv"
         # If file doesn't already exists, extract smartphone informations.
         if not Path(brand_export_file).is_file():
             brand_dict = pd.DataFrame.from_records(
-                extract_brand_infos(network, brand)
+                extract_brand_infos(network, brand, brand_export_file)
             )
-            brand_dict.to_csv(brand_export_file, sep=";", index=False)
             global_list_smartphones = pd.concat(
                 [global_list_smartphones, brand_dict], sort=False
             )
